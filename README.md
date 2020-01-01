@@ -1,13 +1,14 @@
 # Intro
 
-This repo is very much a work in progress of utilizing Vulkan with go. I've wrapped the vulkan-go/vulkan API to make
-them a little more idiomatic, and also provided a bunch of utility classes. 
+This repo is very much a work in progress of utilizing Vulkan with go. I've wrapped the vulkan-go/vulkan APIs to make
+them a little more idiomatic, and easier to use and also provided a bunch of utility classes. 
 
 Here is where I'm at:
 
   * Works with ImGUI
   * Custom memory allocator see allocator.go
   * Utility class called GraphicsApp which does most of the bootstrapping required to get a vulkan app up and going
+  * Can display meshes and textures
 
 If you want to get a good idea of where I'm going checkout examples/imgui
 
@@ -23,4 +24,7 @@ Here is a picture of the examples/imgui program:
 
 ![Example program](/assets/imgui.png)
 
+Here is a picture of the examples/texture program:
+
+![Example program](/assets/texture.png)
 
