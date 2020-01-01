@@ -1,11 +1,9 @@
 package main
 
 import (
-	"fmt"
 	"image"
 	"image/color"
 	"image/png"
-	"log"
 	"math"
 	"os"
 	"time"
@@ -45,32 +43,20 @@ func main() {
 
 	app.EnableDebugging()
 
-	layers, err := vkg.SupportedLayers()
-	orPanic(err)
-	log.Printf("Layers: %v", layers)
-
-	extensions, err := vkg.SupportedExtensions()
-	orPanic(err)
-	log.Printf("Extensions: %v", extensions)
-
 	instance, err := app.CreateInstance()
 	orPanic(err)
 
 	pdevices, err := instance.PhysicalDevices()
 	orPanic(err)
 
-	for _, pdevice := range pdevices {
-		fmt.Printf("[%s]\n", pdevice.DeviceName)
+	if len(pdevices) == 0 {
+		panic("no physical devices found")
 	}
 
 	pdevice := pdevices[0]
 
 	queues, err := pdevice.QueueFamilies()
 	orPanic(err)
-
-	for _, queue := range queues {
-		fmt.Printf("%v\n", queue)
-	}
 
 	ldevice, err := pdevice.CreateLogicalDevice(queues.FilterCompute())
 	orPanic(err)
@@ -82,10 +68,10 @@ func main() {
 
 	bytesNeeded := uint64(WIDTH * HEIGHT * int(unsafe.Sizeof(p)))
 
-	rpool, err := rm.AllocatePoolWithOptions("compute", bytesNeeded, vk.MemoryPropertyFlags(vk.MemoryPropertyHostCoherentBit|vk.MemoryPropertyHostVisibleBit), vk.BufferUsageFlags(vk.BufferUsageStorageBufferBit), vk.SharingModeExclusive)
+	rpool, err := rm.AllocateBufferPoolWithOptions("compute", bytesNeeded, vk.MemoryPropertyHostCoherentBit|vk.MemoryPropertyHostVisibleBit, vk.BufferUsageStorageBufferBit, vk.SharingModeExclusive)
 	orPanic(err)
 
-	bres, err := rpool.AllocateBuffer(bytesNeeded, vk.BufferUsageFlags(vk.BufferUsageStorageBufferBit))
+	bres, err := rpool.AllocateBuffer(bytesNeeded, vk.BufferUsageStorageBufferBit)
 	orPanic(err)
 
 	dsl := &vkg.DescriptorSetLayout{}
@@ -99,13 +85,13 @@ func main() {
 
 	dsl, err = ldevice.CreateDescriptorSetLayout(dsl)
 
-	dpc := &vkg.DescriptorPoolContents{}
-	dpc.AddPoolSize(vk.DescriptorTypeStorageBuffer, 1)
+	dpool := ldevice.NewDescriptorPool()
+	dpool.AddPoolSize(vk.DescriptorTypeStorageBuffer, 1)
 
-	pool, err := ldevice.CreateDescriptorPool(1, dpc)
+	_, err = ldevice.CreateDescriptorPool(dpool, 1)
 	orPanic(err)
 
-	dset, err := pool.Allocate(dsl)
+	dset, err := dpool.Allocate(dsl)
 	orPanic(err)
 
 	dset.AddBuffer(0, vk.DescriptorTypeStorageBuffer, &bres.Buffer, 0)
@@ -131,7 +117,7 @@ func main() {
 	cpool, err := ldevice.CreateCommandPool(queues.FilterCompute()[0])
 	orPanic(err)
 
-	cb, err := cpool.AllocateBuffer()
+	cb, err := cpool.AllocateBuffer(vk.CommandBufferLevelPrimary)
 	orPanic(err)
 
 	err = cb.BeginOneTime()
@@ -151,19 +137,27 @@ func main() {
 
 	ldevice.WaitForFences(true, 10*time.Second, fence)
 
+	cpool.FreeBuffer(cb)
+
 	rpool.Memory.Map()
 
-	data, err := bres.Bytes()
-	orPanic(err)
+	data := bres.Bytes()
 
 	saveImage(data)
 
 	rpool.Memory.Unmap()
-
 	bres.Free()
-
 	fence.Destroy()
-
+	rpool.Destroy()
+	dpool.Free(dset)
+	dpool.Destroy()
+	pipelineLayout.Destroy()
+	computePipeline.Destroy()
+	cache.Destroy()
+	dsl.Destroy()
+	cpool.Destroy()
+	shader.Destroy()
+	ldevice.Destroy()
 	instance.Destroy()
 
 }

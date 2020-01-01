@@ -28,7 +28,7 @@ func (v VertexData) Bytes() []byte {
 	return (*[m]byte)(unsafe.Pointer(&v[0]))[:size]
 }
 
-func (v VertexData) GetBindingDesciption() vk.VertexInputBindingDescription {
+func (v VertexData) GetBindingDescription() vk.VertexInputBindingDescription {
 	var bindingDescription = vk.VertexInputBindingDescription{}
 	bindingDescription.Binding = 0
 	bindingDescription.Stride = uint32(unsafe.Sizeof(Vertex{}))
@@ -96,10 +96,10 @@ type Mesh struct {
 	UBO        *UBO
 	VertexData VertexData
 
-	VertexBuffer  *vkg.HostBoundBuffer
-	VertexBuffer2 *vkg.HostBoundBuffer
+	VertexResource *vkg.BufferResource
+	UBOResource    *vkg.BufferResource
 
-	UBOBuffers []*vkg.HostBoundBuffer
+	descriptorSet *vkg.DescriptorSet
 
 	textureView    vk.ImageView
 	textureSampler vk.Sampler
@@ -234,24 +234,23 @@ func (c *CubeDemo) initMesh() {
 }
 
 func (c *CubeDemo) loadTexture() {
-	image, err := c.app.Device.StageImageFromDisk("image.png")
+
+	cb, err := c.app.GraphicsCommandPool.AllocateBuffer(vk.CommandBufferLevelPrimary)
 	orPanic(err)
 
-	cb, err := c.app.GraphicsCommandPool.AllocateBuffer()
+	tpool := c.app.ResourceManager.ImagePool("textures")
+
+	if tpool == nil {
+		panic("No texture pool found")
+	}
+
+	textureResource, err := tpool.StageTextureFromDisk("image.png", cb, c.app.GraphicsQueue)
 	orPanic(err)
-
-	cb.BeginOneTime()
-	cb.TransitionImageLayout(image, vk.FormatR8g8b8a8Unorm, vk.ImageLayoutUndefined, vk.ImageLayoutTransferDstOptimal)
-	cb.CopyImage(image)
-	cb.TransitionImageLayout(image, vk.FormatR8g8b8a8Unorm, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutShaderReadOnlyOptimal)
-	cb.End()
-
-	imageView, err := image.CreateImageViewWithAspectMask(vk.ImageAspectFlags(vk.ImageAspectColorBit))
-	orPanic(err)
-
-	c.app.GraphicsQueue.SubmitWaitIdle(cb)
 
 	c.app.GraphicsCommandPool.FreeBuffer(cb)
+
+	imageView, err := textureResource.CreateImageViewWithAspectMask(vk.ImageAspectFlags(vk.ImageAspectColorBit))
+	orPanic(err)
 
 	var sampler vk.Sampler
 	vk.CreateSampler(c.app.Device.VKDevice, &vk.SamplerCreateInfo{
@@ -271,7 +270,6 @@ func (c *CubeDemo) loadTexture() {
 
 	c.mesh.textureSampler = sampler
 	c.mesh.textureView = imageView.VKImageView
-
 }
 
 func (c *CubeDemo) init() {
@@ -288,7 +286,7 @@ func (c *CubeDemo) init() {
 
 	c.window = window
 
-	app, err := vkg.NewApp("VulkanCube", vkg.Version{1, 0, 0})
+	app, err := vkg.NewGraphicsApp("VulkanCube", vkg.Version{1, 0, 0})
 	orPanic(err)
 
 	c.app = app
@@ -299,18 +297,33 @@ func (c *CubeDemo) init() {
 	err = app.Init()
 	orPanic(err)
 
+	_, err = app.ResourceManager.AllocateBufferPoolWithOptions("staging", 60*1024*1024, vk.MemoryPropertyHostVisibleBit|vk.MemoryPropertyHostCoherentBit, vk.BufferUsageTransferSrcBit, vk.SharingModeExclusive)
+	orPanic(err)
+
+	_, err = app.ResourceManager.AllocateImagePoolWithOptions("textures", 60*1024*1024, vk.MemoryPropertyDeviceLocalBit, vk.ImageUsageTransferDstBit|vk.ImageUsageSampledBit, vk.SharingModeExclusive)
+	orPanic(err)
+
 	c.initMesh()
 
-	c.mesh.VertexBuffer, err = c.app.Device.CreateHostBoundBuffer(c.mesh.VertexData)
-	orPanic(err)
-	c.mesh.VertexBuffer.Map()
+	size := len(c.mesh.VertexData.Bytes()) + len(c.mesh.UBO.Bytes()) + 128
 
-	c.mesh.UBOBuffers = make([]*vkg.HostBoundBuffer, 4)
-	for i, _ := range c.mesh.UBOBuffers {
-		c.mesh.UBOBuffers[i], err = c.app.Device.CreateHostBoundBuffer(c.mesh.UBO)
-		orPanic(err)
-		c.mesh.UBOBuffers[i].Map()
-	}
+	cubePool, err := c.app.ResourceManager.AllocateBufferPoolWithOptions("cube", uint64(size), vk.MemoryPropertyHostVisibleBit|vk.MemoryPropertyHostCoherentBit, vk.BufferUsageVertexBufferBit|vk.BufferUsageUniformBufferBit, vk.SharingModeExclusive)
+	orPanic(err)
+
+	c.mesh.VertexResource, err = cubePool.AllocateBuffer(uint64(len(c.mesh.VertexData.Bytes())), vk.BufferUsageVertexBufferBit)
+	orPanic(err)
+
+	c.mesh.UBOResource, err = cubePool.AllocateBuffer(uint64(len(c.mesh.UBO.Bytes())), vk.BufferUsageUniformBufferBit)
+	orPanic(err)
+
+	// Map the data so we can simply write to it
+	_, err = cubePool.Memory.Map()
+	orPanic(err)
+
+	vrb := c.mesh.VertexResource.Bytes()
+	copy(vrb, c.mesh.VertexData.Bytes())
+
+	c.mesh.UpdateUBO(c.app)
 
 	c.loadTexture()
 
@@ -318,7 +331,7 @@ func (c *CubeDemo) init() {
 
 	gc := app.CreateGraphicsPipelineConfig()
 
-	gc.SetVertexDescriptor(c.mesh.VertexData)
+	gc.AddVertexDescriptor(c.mesh.VertexData)
 	gc.AddShaderStageFromFile("shaders/vert.spv", "main", vk.ShaderStageVertexBit)
 	gc.AddShaderStageFromFile("shaders/frag.spv", "main", vk.ShaderStageFragmentBit)
 	gc.SetPipelineLayout(c.pipelineLayout)
@@ -336,12 +349,27 @@ func (c *CubeDemo) init() {
 
 }
 
+func (mesh *Mesh) UpdateUBO(app *vkg.GraphicsApp) {
+
+	var m lin.Mat4x4
+	m.Dup(&mesh.UBO.Model)
+	mesh.UBO.Model.Rotate(&m, 0.0, 0.0, 0.60, lin.DegreesToRadians(2))
+	extent := app.GetScreenExtent()
+	ratio := float32(extent.Width) / float32(extent.Height)
+	mesh.UBO.Proj.Perspective(lin.DegreesToRadians(45), ratio, 0.1, 10.0)
+	mesh.UBO.Proj[1][1] *= -1
+
+	ubr := mesh.UBOResource.Bytes()
+
+	copy(ubr, mesh.UBO.Bytes())
+}
+
 func (c *CubeDemo) createDescriptorSet() {
 
-	dsc := &vkg.DescriptorPoolContents{}
-	dsc.AddPoolSize(vk.DescriptorTypeUniformBuffer, 4)
-	dsc.AddPoolSize(vk.DescriptorTypeCombinedImageSampler, 4)
-	dsp, err := c.app.Device.CreateDescriptorPool(4, dsc)
+	dpool := c.app.Device.NewDescriptorPool()
+	dpool.AddPoolSize(vk.DescriptorTypeUniformBuffer, 4)
+	dpool.AddPoolSize(vk.DescriptorTypeCombinedImageSampler, 4)
+	_, err := c.app.Device.CreateDescriptorPool(dpool, 4)
 	orPanic(err)
 
 	d := c.mesh.UBO.Descriptor()
@@ -364,20 +392,12 @@ func (c *CubeDemo) createDescriptorSet() {
 
 	c.app.Device.CreateDescriptorSetLayout(dsl)
 
-	c.descriptorSets = make([]*vkg.DescriptorSet, 0)
+	c.mesh.descriptorSet, err = dpool.Allocate(dsl)
 
-	for i := 0; i < c.app.NumFramebuffers(); i++ {
-
-		descriptorSet, err := dsp.Allocate(dsl)
-		orPanic(err)
-
-		descriptorSet.AddBuffer(0, vk.DescriptorTypeUniformBuffer, c.mesh.UBOBuffers[i].HostBuffer, 0)
-		descriptorSet.AddCombinedImageSampler(1, vk.ImageLayoutShaderReadOnlyOptimal, c.mesh.textureView, c.mesh.textureSampler)
-		descriptorSet.Write()
-		orPanic(err)
-
-		c.descriptorSets = append(c.descriptorSets, descriptorSet)
-	}
+	c.mesh.descriptorSet.AddBuffer(0, vk.DescriptorTypeUniformBuffer, &c.mesh.UBOResource.Buffer, 0)
+	c.mesh.descriptorSet.AddCombinedImageSampler(1, vk.ImageLayoutShaderReadOnlyOptimal, c.mesh.textureView, c.mesh.textureSampler)
+	c.mesh.descriptorSet.Write()
+	orPanic(err)
 
 	c.pipelineLayout, err = c.app.Device.CreatePipelineLayout(dsl)
 	orPanic(err)
@@ -386,17 +406,7 @@ func (c *CubeDemo) createDescriptorSet() {
 
 func (c *CubeDemo) MakeCommandBuffer(buffer *vkg.CommandBuffer, frame int) {
 
-	var m lin.Mat4x4
-
-	m.Dup(&c.mesh.UBO.Model)
-
-	c.mesh.UBO.Model.Rotate(&m, 0.0, 0.0, 0.10, lin.DegreesToRadians(2))
-	extent := c.app.GetScreenExtent()
-	ratio := float32(extent.Width) / float32(extent.Height)
-	c.mesh.UBO.Proj.Perspective(lin.DegreesToRadians(45), ratio, 0.1, 10.0)
-	c.mesh.UBO.Proj[1][1] *= -1
-
-	c.mesh.UBOBuffers[frame].Map()
+	c.mesh.UpdateUBO(c.app)
 
 	buffer.Reset()
 
@@ -425,11 +435,11 @@ func (c *CubeDemo) MakeCommandBuffer(buffer *vkg.CommandBuffer, frame int) {
 
 	vk.CmdBindPipeline(buffer.VK(), vk.PipelineBindPointGraphics, c.app.GraphicsPipelines["cube"])
 
-	vk.CmdBindVertexBuffers(buffer.VK(), 0, 1, []vk.Buffer{c.mesh.VertexBuffer.HostBuffer.VKBuffer}, []vk.DeviceSize{0})
+	vk.CmdBindVertexBuffers(buffer.VK(), 0, 1, []vk.Buffer{c.mesh.VertexResource.VKBuffer}, []vk.DeviceSize{0})
 
 	vk.CmdBindDescriptorSets(buffer.VK(), vk.PipelineBindPointGraphics,
 		c.pipelineLayout.VKPipelineLayout, 0, 1,
-		[]vk.DescriptorSet{c.descriptorSets[frame].VKDescriptorSet}, 0, nil)
+		[]vk.DescriptorSet{c.mesh.descriptorSet.VKDescriptorSet}, 0, nil)
 
 	vk.CmdDraw(buffer.VK(), uint32(len(c.mesh.VertexData)), 1, 0, 0)
 
@@ -443,7 +453,7 @@ func (c *CubeDemo) run() {
 
 	for {
 		if c.window.ShouldClose() {
-			return
+			break
 		}
 		glfw.PollEvents()
 		err := c.app.DrawFrameSync()

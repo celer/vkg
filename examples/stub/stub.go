@@ -29,7 +29,7 @@ func main() {
 	glfw.WindowHint(glfw.ClientAPI, glfw.NoAPI)
 	window, err := glfw.CreateWindow(800, 600, "Example app", nil, nil)
 
-	app, err := vkg.NewApp("Myapp", vkg.Version{0, 0, 1})
+	app, err := vkg.NewGraphicsApp("Myapp", vkg.Version{0, 0, 1})
 	orPanic(err)
 
 	app.SetWindow(window)

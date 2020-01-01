@@ -4,16 +4,19 @@ import (
 	vk "github.com/vulkan-go/vulkan"
 )
 
+// DescriptorPool is essentially a resource manager for descriptor pools provided by Vulkan.
 type DescriptorPool struct {
-	Device           *Device
-	VKDescriptorPool vk.DescriptorPool
-}
-
-type DescriptorPoolContents struct {
+	Device               *Device
+	VKDescriptorPool     vk.DescriptorPool
 	VKDescriptorPoolSize []vk.DescriptorPoolSize
 }
 
-func (d *DescriptorPoolContents) AddPoolSize(dtype vk.DescriptorType, count int) {
+func (d *Device) NewDescriptorPool() *DescriptorPool {
+	return &DescriptorPool{Device: d}
+}
+
+// AddPoolSize informs the descriptor pool how many of a certain descriptortype it will contain
+func (d *DescriptorPool) AddPoolSize(dtype vk.DescriptorType, count int) {
 	if d.VKDescriptorPoolSize == nil {
 		d.VKDescriptorPoolSize = make([]vk.DescriptorPoolSize, 0)
 	}
@@ -23,13 +26,15 @@ func (d *DescriptorPoolContents) AddPoolSize(dtype vk.DescriptorType, count int)
 	})
 }
 
-func (d *Device) CreateDescriptorPool(maxSets int, contents *DescriptorPoolContents) (*DescriptorPool, error) {
+// CreateDescriptorPool creates the descriptor pool
+func (d *Device) CreateDescriptorPool(pool *DescriptorPool, maxSets int) (*DescriptorPool, error) {
 
 	var descriptorPoolCreateInfo = vk.DescriptorPoolCreateInfo{
 		SType:         vk.StructureTypeDescriptorPoolCreateInfo,
 		MaxSets:       uint32(maxSets),
-		PoolSizeCount: uint32(len(contents.VKDescriptorPoolSize)),
-		PPoolSizes:    contents.VKDescriptorPoolSize,
+		Flags:         vk.DescriptorPoolCreateFlags(vk.DescriptorPoolCreateFreeDescriptorSetBit),
+		PoolSizeCount: uint32(len(pool.VKDescriptorPoolSize)),
+		PPoolSizes:    pool.VKDescriptorPoolSize,
 	}
 
 	var descriptorPool vk.DescriptorPool
@@ -39,15 +44,14 @@ func (d *Device) CreateDescriptorPool(maxSets int, contents *DescriptorPoolConte
 		return nil, err
 	}
 
-	var ret DescriptorPool
+	pool.Device = d
+	pool.VKDescriptorPool = descriptorPool
 
-	ret.Device = d
-	ret.VKDescriptorPool = descriptorPool
-
-	return &ret, nil
+	return pool, nil
 
 }
 
+// Allocate allocates a descriptor set from the pool given the descriptor set layout
 func (d *DescriptorPool) Allocate(layouts ...*DescriptorSetLayout) (*DescriptorSet, error) {
 
 	descriptorSetAllocateInfo := vk.DescriptorSetAllocateInfo{}
@@ -78,4 +82,20 @@ func (d *DescriptorPool) Allocate(layouts ...*DescriptorSetLayout) (*DescriptorS
 
 	return &ret, nil
 
+}
+
+func (d *DescriptorPool) Reset() error {
+	return vk.Error(vk.ResetDescriptorPool(d.Device.VKDevice, d.VKDescriptorPool, 0))
+}
+
+func (d *DescriptorPool) Free(ds *DescriptorSet) error {
+	var descriptorSet vk.DescriptorSet
+
+	descriptorSet = ds.VKDescriptorSet
+
+	return vk.Error(vk.FreeDescriptorSets(d.Device.VKDevice, d.VKDescriptorPool, 1, &descriptorSet))
+}
+
+func (d *DescriptorPool) Destroy() {
+	vk.DestroyDescriptorPool(d.Device.VKDevice, d.VKDescriptorPool, nil)
 }

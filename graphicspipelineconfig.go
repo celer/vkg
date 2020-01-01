@@ -4,14 +4,11 @@ import (
 	vk "github.com/vulkan-go/vulkan"
 )
 
-type IGraphicsPipelineConfig interface {
-	VKGraphicsPipelineCreateInfo(screenExtents vk.Extent2D) (vk.GraphicsPipelineCreateInfo, error)
-}
-
+// GraphicsPipelineConfig is a utility object to ease construction of graphics pipelines
 type GraphicsPipelineConfig struct {
 	Device               *Device
 	ShaderStages         []vk.PipelineShaderStageCreateInfo
-	VertexSource         VertexSource
+	VertexSource         VertexSourcer
 	DescriptorSetLayouts []*DescriptorSetLayout
 
 	PipelineLayout *PipelineLayout
@@ -50,6 +47,7 @@ type GraphicsPipelineConfig struct {
 	FrontFace vk.FrontFace
 
 	// Add a pipeline color blend attachment state, by default it's assumed that all colors are set to no blending
+	// see https://www.khronos.org/registry/vulkan/specs/1.1-extensions/man/html/VkPipelineColorBlendAttachmentState.html
 	BlendAttachments []vk.PipelineColorBlendAttachmentState
 
 	// DepthTestEnable defaults to true
@@ -57,8 +55,14 @@ type GraphicsPipelineConfig struct {
 
 	// DepthWriteEnable defaults to true
 	DepthWriteEnable bool
+
+	VertexInputBindingDescriptions   []vk.VertexInputBindingDescription
+	VertexInputAttributeDescriptions []vk.VertexInputAttributeDescription
+
+	toDestroy []IDestructable
 }
 
+// CreateGraphicsPipelineConfig creates a new config object
 func (d *Device) CreateGraphicsPipelineConfig() *GraphicsPipelineConfig {
 	return &GraphicsPipelineConfig{
 		Device:                 d,
@@ -73,6 +77,21 @@ func (d *Device) CreateGraphicsPipelineConfig() *GraphicsPipelineConfig {
 	}
 }
 
+func (g *GraphicsPipelineConfig) manageDestroy(d IDestructable) {
+	if g.toDestroy == nil {
+		g.toDestroy = make([]IDestructable, 0)
+	}
+	g.toDestroy = append(g.toDestroy, d)
+}
+
+func (g *GraphicsPipelineConfig) Destroy() {
+	for _, d := range g.toDestroy {
+		d.Destroy()
+	}
+
+}
+
+// AddBlendAttachment adds a new blend attachment
 func (g *GraphicsPipelineConfig) AddBlendAttachment(ba vk.PipelineColorBlendAttachmentState) {
 	if g.BlendAttachments == nil {
 		g.BlendAttachments = make([]vk.PipelineColorBlendAttachmentState, 0)
@@ -80,44 +99,62 @@ func (g *GraphicsPipelineConfig) AddBlendAttachment(ba vk.PipelineColorBlendAtta
 	g.BlendAttachments = append(g.BlendAttachments, ba)
 }
 
+// SetCullMode sets the cull mode
 func (g *GraphicsPipelineConfig) SetCullMode(mode vk.CullModeFlagBits) *GraphicsPipelineConfig {
 	g.CullMode = mode
 	return g
 }
 
+// SetDynamicState specifies which part of the pipeline may be changed with command buffer commands
 func (g *GraphicsPipelineConfig) SetDynamicState(states ...vk.DynamicState) *GraphicsPipelineConfig {
 	g.DynamicState = states
 	return g
 }
 
+// AddShaderStageFromFile adds a shader from a specified file
 func (g *GraphicsPipelineConfig) AddShaderStageFromFile(file, entryPoint string, stageType vk.ShaderStageFlagBits) error {
 	shader, err := g.Device.LoadShaderModuleFromFile(file)
 	if err != nil {
-		return nil
+		return err
 	}
 	if g.ShaderStages == nil {
 		g.ShaderStages = make([]vk.PipelineShaderStageCreateInfo, 0)
 	}
 	g.ShaderStages = append(g.ShaderStages, shader.VKPipelineShaderStageCreateInfo(stageType, entryPoint))
+
+	g.manageDestroy(shader)
+
 	return nil
 }
 
+// SetPipelineLayout sets the pipeline layout
 func (g *GraphicsPipelineConfig) SetPipelineLayout(layout *PipelineLayout) *GraphicsPipelineConfig {
 	g.PipelineLayout = layout
 	return g
 }
 
+// SetShaderStages sets the shader stages directly
 func (g *GraphicsPipelineConfig) SetShaderStages(shaderStages []vk.PipelineShaderStageCreateInfo) *GraphicsPipelineConfig {
 	g.ShaderStages = shaderStages
 	return g
 }
 
-//FIXME should accomodate a list
-func (g *GraphicsPipelineConfig) SetVertexDescriptor(v VertexSource) *GraphicsPipelineConfig {
-	g.VertexSource = v
+// AddVertexDescriptor adds vertex descriptors based off the specified interface
+func (g *GraphicsPipelineConfig) AddVertexDescriptor(v VertexDescriptor) *GraphicsPipelineConfig {
+	if g.VertexInputBindingDescriptions == nil {
+		g.VertexInputBindingDescriptions = make([]vk.VertexInputBindingDescription, 0)
+	}
+	if g.VertexInputAttributeDescriptions == nil {
+		g.VertexInputAttributeDescriptions = make([]vk.VertexInputAttributeDescription, 0)
+	}
+
+	g.VertexInputBindingDescriptions = append(g.VertexInputBindingDescriptions, v.GetBindingDescription())
+	g.VertexInputAttributeDescriptions = append(g.VertexInputAttributeDescriptions, v.GetAttributeDescriptions()...)
+
 	return g
 }
 
+// AddDescriptorSetLayout adds a specific DescriptorSetLayout
 func (g *GraphicsPipelineConfig) AddDescriptorSetLayout(d *DescriptorSetLayout) *GraphicsPipelineConfig {
 	if g.DescriptorSetLayouts == nil {
 		g.DescriptorSetLayouts = make([]*DescriptorSetLayout, 0)
@@ -126,24 +163,16 @@ func (g *GraphicsPipelineConfig) AddDescriptorSetLayout(d *DescriptorSetLayout) 
 	return g
 }
 
+// VKGraphicsPipelineCreateInfo uses the provided config information to create a vulkank vk.GraphicsPipelineCreateInfo structure
 func (g *GraphicsPipelineConfig) VKGraphicsPipelineCreateInfo(extent vk.Extent2D) (vk.GraphicsPipelineCreateInfo, error) {
 
 	var vertexInputState = vk.PipelineVertexInputStateCreateInfo{}
 	vertexInputState.SType = vk.StructureTypePipelineVertexInputStateCreateInfo
 
-	if g.VertexSource == nil {
-		vertexInputState.VertexBindingDescriptionCount = 0
-		vertexInputState.PVertexBindingDescriptions = nil // Optional
-		vertexInputState.VertexAttributeDescriptionCount = 0
-		vertexInputState.PVertexAttributeDescriptions = nil // Optional
-
-	} else {
-		vertexInputState.VertexBindingDescriptionCount = 1
-		vertexInputState.PVertexBindingDescriptions = []vk.VertexInputBindingDescription{g.VertexSource.GetBindingDesciption()}
-		attrs := g.VertexSource.GetAttributeDescriptions()
-		vertexInputState.VertexAttributeDescriptionCount = uint32(len(attrs))
-		vertexInputState.PVertexAttributeDescriptions = attrs
-	}
+	vertexInputState.VertexBindingDescriptionCount = uint32(len(g.VertexInputBindingDescriptions))
+	vertexInputState.PVertexBindingDescriptions = g.VertexInputBindingDescriptions
+	vertexInputState.VertexAttributeDescriptionCount = uint32(len(g.VertexInputAttributeDescriptions))
+	vertexInputState.PVertexAttributeDescriptions = g.VertexInputAttributeDescriptions
 
 	var inputAssemblyState = vk.PipelineInputAssemblyStateCreateInfo{}
 	inputAssemblyState.SType = vk.StructureTypePipelineInputAssemblyStateCreateInfo

@@ -4,42 +4,7 @@ import (
 	vk "github.com/vulkan-go/vulkan"
 )
 
-type DescriptorSetLayout struct {
-	Device                        *Device
-	VKDescriptorSetLayout         vk.DescriptorSetLayout
-	VKDescriptorSetLayoutBindings []vk.DescriptorSetLayoutBinding
-}
-
-func (d *DescriptorSetLayout) AddBinding(binding vk.DescriptorSetLayoutBinding) {
-	if d.VKDescriptorSetLayoutBindings == nil {
-		d.VKDescriptorSetLayoutBindings = make([]vk.DescriptorSetLayoutBinding, 0)
-	}
-	d.VKDescriptorSetLayoutBindings = append(d.VKDescriptorSetLayoutBindings, binding)
-}
-
-func (d *DescriptorSetLayout) Destroy() {
-	vk.DestroyDescriptorSetLayout(d.Device.VKDevice, d.VKDescriptorSetLayout, nil)
-}
-
-func (d *Device) CreateDescriptorSetLayout(layout *DescriptorSetLayout) (*DescriptorSetLayout, error) {
-	var descriptorSetLayoutCreateInfo = &vk.DescriptorSetLayoutCreateInfo{
-		SType:        vk.StructureTypeDescriptorSetLayoutCreateInfo,
-		BindingCount: uint32(len(layout.VKDescriptorSetLayoutBindings)),
-		PBindings:    layout.VKDescriptorSetLayoutBindings,
-	}
-
-	var descriptorSetLayout vk.DescriptorSetLayout
-	err := vk.Error(vk.CreateDescriptorSetLayout(d.VKDevice, descriptorSetLayoutCreateInfo, nil, &descriptorSetLayout))
-	if err != nil {
-		return nil, err
-	}
-
-	layout.Device = d
-	layout.VKDescriptorSetLayout = descriptorSetLayout
-
-	return layout, nil
-}
-
+// DescriptorSet is a binding of resources to a descriptor, per a specific DescriptorSetLayout
 type DescriptorSet struct {
 	Device               *Device
 	DescriptorPool       *DescriptorPool
@@ -47,6 +12,11 @@ type DescriptorSet struct {
 	VKWriteDiscriptorSet []vk.WriteDescriptorSet
 }
 
+func (d *Device) NewDescriptorSet() *DescriptorSet {
+	return &DescriptorSet{Device: d}
+}
+
+// AddBuffer adds a specific buffer to this descirptor set
 func (du *DescriptorSet) AddBuffer(dstBinding int, dtype vk.DescriptorType, b *Buffer, offset int) {
 	var descriptorBufferInfo = vk.DescriptorBufferInfo{}
 	descriptorBufferInfo.Buffer = b.VKBuffer
@@ -66,6 +36,7 @@ func (du *DescriptorSet) AddBuffer(dstBinding int, dtype vk.DescriptorType, b *B
 	du.VKWriteDiscriptorSet = append(du.VKWriteDiscriptorSet, writeDescriptorSet)
 }
 
+// AddCombinedImageSampler adds an image layout, image view and sampler to support displaying a texture
 func (du *DescriptorSet) AddCombinedImageSampler(dstBinding int, layout vk.ImageLayout, imageView vk.ImageView, sampler vk.Sampler) {
 
 	var descriptorImageInfo = vk.DescriptorImageInfo{}
@@ -87,9 +58,10 @@ func (du *DescriptorSet) AddCombinedImageSampler(dstBinding int, layout vk.Image
 
 }
 
-func (d *DescriptorSet) Write() {
-	for i, _ := range d.VKWriteDiscriptorSet {
-		d.VKWriteDiscriptorSet[i].DstSet = d.VKDescriptorSet
+// Write modifies the descriptor set
+func (du *DescriptorSet) Write() {
+	for i := range du.VKWriteDiscriptorSet {
+		du.VKWriteDiscriptorSet[i].DstSet = du.VKDescriptorSet
 	}
-	vk.UpdateDescriptorSets(d.Device.VKDevice, uint32(len(d.VKWriteDiscriptorSet)), d.VKWriteDiscriptorSet, 0, nil)
+	vk.UpdateDescriptorSets(du.Device.VKDevice, uint32(len(du.VKWriteDiscriptorSet)), du.VKWriteDiscriptorSet, 0, nil)
 }

@@ -1,7 +1,6 @@
 package vkg
 
 import (
-	"github.com/kr/pretty"
 	vk "github.com/vulkan-go/vulkan"
 )
 
@@ -50,13 +49,7 @@ func (p *Device) DefaultNumSwapchainImages(surface vk.Surface) (int, error) {
 	}
 	caps.Deref()
 
-	if caps.MaxImageCount == 0 || caps.MinImageCount+2 < caps.MaxImageCount {
-		return int(caps.MinImageCount + 2), nil
-	} else if caps.MinImageCount+1 < caps.MaxImageCount {
-		return int(caps.MinImageCount) + 1, nil
-	} else {
-		return int(caps.MinImageCount) + 1, nil
-	}
+	return int(caps.MinImageCount) + 1, nil
 }
 
 func (p *Device) CreateSwapchain(surface vk.Surface, graphicsQueue, presentQueue *Queue, options *CreateSwapchainOptions) (*Swapchain, error) {
@@ -154,8 +147,6 @@ func (p *Device) CreateSwapchain(surface vk.Surface, graphicsQueue, presentQueue
 		createInfo.PQueueFamilyIndices = nil
 		createInfo.ImageSharingMode = vk.SharingModeExclusive
 	}
-
-	pretty.Log(createInfo)
 
 	err = vk.Error(vk.CreateSwapchain(p.VKDevice, createInfo, nil, &swapchain))
 	if err != nil {

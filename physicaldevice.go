@@ -3,7 +3,6 @@ package vkg
 import (
 	"fmt"
 
-	"github.com/kr/pretty"
 	vk "github.com/vulkan-go/vulkan"
 )
 
@@ -155,8 +154,6 @@ func (p *PhysicalDevice) CreateLogicalDeviceWithOptions(qfs QueueFamilySlice, op
 
 	var ldevice vk.Device
 
-	pretty.Log(deviceCreateInfo)
-
 	err := vk.Error(vk.CreateDevice(p.VKPhysicalDevice, &deviceCreateInfo, nil, &ldevice))
 	if err != nil {
 		return nil, err
@@ -239,7 +236,7 @@ func (p *PhysicalDevice) VKPhysicalDeviceMemoryProperties() vk.PhysicalDeviceMem
 	return memoryProperties
 }
 
-func (p *PhysicalDevice) FindMemoryType(memoryTypeBits uint32, properties vk.MemoryPropertyFlags) (uint32, error) {
+func (p *PhysicalDevice) FindMemoryType(memoryTypeBits uint32, properties vk.MemoryPropertyFlagBits) (uint32, error) {
 	memoryProperties := p.VKPhysicalDeviceMemoryProperties()
 	mp := &memoryProperties
 	mp.Deref()
@@ -254,7 +251,7 @@ func (p *PhysicalDevice) FindMemoryType(memoryTypeBits uint32, properties vk.Mem
 
 		mt.Deref()
 		if memoryTypeBits&(1<<i) != 0 &&
-			mt.PropertyFlags&properties == properties {
+			vk.MemoryPropertyFlagBits(mt.PropertyFlags)&properties == properties {
 			return i, nil
 		}
 	}

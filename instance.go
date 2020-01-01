@@ -2,8 +2,9 @@ package vkg
 
 import (
 	"fmt"
+	"log"
+	"unsafe"
 
-	"github.com/kr/pretty"
 	vk "github.com/vulkan-go/vulkan"
 )
 
@@ -98,24 +99,61 @@ func SupportedExtensions() ([]string, error) {
 	return extNames, nil
 }
 
+/*
+	VK_LAYER_GOOGLE_threading - check validity of multi-threaded API usage
+	VK_LAYER_KHRONOS_validation -
+	VK_LAYER_LUNARG_api_dump - print API calls and their parameters and values
+	VK_LAYER_LUNARG_core_validation - validate the descriptor set, pipeline state, and dynamic state; validate the interfaces between SPIR-V modules and the graphics pipeline; track and validate GPU memory and its binding to objects and command buffers
+	VK_LAYER_LUNARG_device_limits - validate that app properly queries features and obeys feature limitations
+	VK_LAYER_LUNARG_device_simulation -
+	VK_LAYER_LUNARG_image - validate texture formats and render target formats
+	VK_LAYER_LUNARG_monitor -
+	VK_LAYER_LUNARG_object_tracker - track all Vulkan objects and flag invalid objects and object memory leaks
+	VK_LAYER_LUNARG_screenshot - meta layer which loads all other validation layers
+	VK_LAYER_LUNARG_standard_validation - meta layer which loads all other validation layers
+	VK_LAYER_LUNARG_swapchain - validate the use of the WSI "swapchain" extensions
+	VK_LAYER_LUNARG_vktrace
+	VK_LAYER_KHRONOS_validation - The main, comprehensive Khronos validation layer. Vulkan is an Explicit API, enabling direct control over how GPUs actually work. By design, minimal error checking is done inside a Vulkan driver. Applications have full control and responsibility for correct operation. Any errors in how Vulkan is used can result in a crash. The Khronos Valiation Layer can be enabled to assist development by enabling developers to verify their applications correctly use the Vulkan API.
+
+
+	see: https://vulkan.lunarg.com/doc/view/1.1.130.0/windows/validation_layers.html
+
+*/
+
 func (a *App) EnableDebugging() {
-	a.EnableLayer("VK_LAYER_LUNARG_parameter_validation")
-	a.EnableLayer("VK_LAYER_LUNARG_core_validation")
-	a.EnableLayer("VK_LAYER_GOOGLE_threading")
-	a.EnableLayer("VK_LAYER_LUNARG_standard_validation")
+	/*
+		a.EnableLayer("VK_LAYER_GOOGLE_threading")
+		a.EnableLayer("VK_LAYER_LUNARG_parameter_validation")
+		a.EnableLayer("VK_LAYER_LUNARG_device_limits")
+		a.EnableLayer("VK_LAYER_LUNARG_object_tracker")
+		a.EnableLayer("VK_LAYER_LUNARG_image")
+		a.EnableLayer("VK_LAYER_LUNARG_core_validation")
+		a.EnableLayer("VK_LAYER_LUNARG_swapchain")
+		a.EnableLayer("VK_LAYER_GOOGLE_unique_objects")
+	*/
+
+	a.EnableLayer("VK_LAYER_KHRONOS_validation")
+
 	a.EnableExtension("VK_EXT_debug_utils")
 	a.EnableExtension("VK_EXT_debug_report")
 }
 
 // Enable a specific layer
-func (a *App) EnableLayer(layer string) *App {
-	//TODO: Ignore unsupported layers and produce warning
+func (a *App) EnableLayer(layer string) (*App, error) {
 	if a.EnabledLayers == nil {
 		a.EnabledLayers = make([]string, 0)
 	}
-	a.EnabledLayers = append(a.EnabledLayers, layer)
-	println("Adding layer", layer)
-	return a
+	layers, err := SupportedLayers()
+	if err != nil {
+		return a, fmt.Errorf("error getting supported layers: %w", err)
+	}
+	for _, l := range layers {
+		if l == layer {
+			a.EnabledLayers = append(a.EnabledLayers, layer)
+			return a, nil
+		}
+	}
+	return a, fmt.Errorf("validation layer '%s' not found", layer)
 }
 
 // Enable an extension for use by the application
@@ -162,8 +200,6 @@ func (a *App) CreateInstance() (*Instance, error) {
 
 	instance := &Instance{}
 
-	pretty.Log(createInfo)
-
 	err := vk.Error(vk.CreateInstance(&createInfo, nil, &instance.VKInstance))
 	if err != nil {
 		return nil, err
@@ -203,6 +239,46 @@ func (i *Instance) PhysicalDevices() ([]*PhysicalDevice, error) {
 	}
 	return ret, nil
 
+}
+
+func (i *Instance) UseDefaultDebugCallback() {
+	i.SetDebugCallback(DefaultDebugCallback)
+}
+
+type DebugCallback func(flags vk.DebugReportFlags, objectType vk.DebugReportObjectType,
+	object uint64, location uint, messageCode int32, pLayerPrefix string,
+	pMessage string, pUserData unsafe.Pointer) vk.Bool32
+
+func (i *Instance) SetDebugCallback(callback vk.DebugReportCallbackFunc) error {
+	var debugCallback vk.DebugReportCallback
+	ret := vk.CreateDebugReportCallback(i.VKInstance, &vk.DebugReportCallbackCreateInfo{
+		SType:       vk.StructureTypeDebugReportCallbackCreateInfo,
+		Flags:       vk.DebugReportFlags(vk.DebugReportErrorBit | vk.DebugReportWarningBit),
+		PfnCallback: callback,
+	}, nil, &debugCallback)
+	return vk.Error(ret)
+}
+
+// DefaultDebugCallback - taken from github.com/vulkan-go/asche/
+func DefaultDebugCallback(flags vk.DebugReportFlags, objectType vk.DebugReportObjectType,
+	object uint64, location uint, messageCode int32, pLayerPrefix string,
+	pMessage string, pUserData unsafe.Pointer) vk.Bool32 {
+
+	switch {
+	case flags&vk.DebugReportFlags(vk.DebugReportInformationBit) != 0:
+		log.Printf("INFORMATION: [%s] Code %d : %s", pLayerPrefix, messageCode, pMessage)
+	case flags&vk.DebugReportFlags(vk.DebugReportWarningBit) != 0:
+		log.Printf("WARNING: [%s] Code %d : %s", pLayerPrefix, messageCode, pMessage)
+	case flags&vk.DebugReportFlags(vk.DebugReportPerformanceWarningBit) != 0:
+		log.Printf("PERFORMANCE WARNING: [%s] Code %d : %s", pLayerPrefix, messageCode, pMessage)
+	case flags&vk.DebugReportFlags(vk.DebugReportErrorBit) != 0:
+		log.Printf("ERROR: [%s] Code %d : %s", pLayerPrefix, messageCode, pMessage)
+	case flags&vk.DebugReportFlags(vk.DebugReportDebugBit) != 0:
+		log.Printf("DEBUG: [%s] Code %d : %s", pLayerPrefix, messageCode, pMessage)
+	default:
+		log.Printf("INFORMATION: [%s] Code %d : %s", pLayerPrefix, messageCode, pMessage)
+	}
+	return vk.Bool32(vk.False)
 }
 
 //Instance is an instance of the Vulkan subsystem

@@ -6,23 +6,48 @@ import (
 	vk "github.com/vulkan-go/vulkan"
 )
 
+// Device is a logical device per Vulkan terminology
 type Device struct {
 	PhysicalDevice *PhysicalDevice
 	VKDevice       vk.Device
 }
 
+// Destroy destroys the device
 func (d *Device) Destroy() {
 	vk.DestroyDevice(d.VKDevice, nil)
 }
 
+// String is a stringer interface for the device
 func (d *Device) String() string {
 	return fmt.Sprintf("{ PhysicalDevice: %s }", d.PhysicalDevice)
 }
 
-func (d *Device) WaitIdle() {
-	vk.DeviceWaitIdle(d.VKDevice)
+// WaitIdle waits until the device is idle
+func (d *Device) WaitIdle() error {
+	return vk.Error(vk.DeviceWaitIdle(d.VKDevice))
 }
 
+// FlushMappedRanges will flush mapped memory ranges, it can take a BufferResource directly, as it implements the required interface
+func (d *Device) FlushMappedRanges(r ...MappedMemoryRange) error {
+
+	d.PhysicalDevice.VKPhysicalDeviceProperties.Limits.Deref()
+
+	atomSize := d.PhysicalDevice.VKPhysicalDeviceProperties.Limits.NonCoherentAtomSize
+
+	ranges := make([]vk.MappedMemoryRange, len(r))
+	for i := range r {
+		ranges[i] = r[i].VKMappedMemoryRange()
+
+		// we need to make sure the range is a mltiple of atomSize
+		m := (ranges[i].Size % atomSize)
+		ranges[i].Size = ranges[i].Size - m + atomSize
+
+	}
+
+	return vk.Error(vk.FlushMappedMemoryRanges(d.VKDevice, uint32(len(ranges)), ranges))
+}
+
+// GetQueue gets a queue matching a specific queue family
 func (d *Device) GetQueue(qf *QueueFamily) *Queue {
 
 	var vkq vk.Queue
@@ -37,21 +62,8 @@ func (d *Device) GetQueue(qf *QueueFamily) *Queue {
 	return &queue
 }
 
-type AllocationRequirements struct {
-	Size           int
-	MemoryTypeBits uint32
-}
-
-func (d *Device) AllocateForBuffer(b *Buffer, memoryProperties vk.MemoryPropertyFlags) (*DeviceMemory, error) {
-	ar := b.AllocationRequirments()
-	mem, err := d.Allocate(ar.Size, ar.MemoryTypeBits, memoryProperties)
-	if err != nil {
-		return nil, err
-	}
-	return mem, err
-}
-
-func (d *Device) Allocate(sizeInBytes int, memoryTypeBits uint32, memoryProperties vk.MemoryPropertyFlags) (*DeviceMemory, error) {
+// Allocate allocates a certain amount and type of memory
+func (d *Device) Allocate(sizeInBytes int, memoryTypeBits uint32, memoryProperties vk.MemoryPropertyFlagBits) (*DeviceMemory, error) {
 
 	var allocateInfo = vk.MemoryAllocateInfo{}
 	allocateInfo.SType = vk.StructureTypeMemoryAllocateInfo

@@ -3,14 +3,21 @@ package vkg
 import (
 	"fmt"
 	"log"
-	"sync"
 
 	"github.com/vulkan-go/glfw/v3.3/glfw"
 	vk "github.com/vulkan-go/vulkan"
 )
 
+var FrameLag = 3
+
+// StopCmdBufferConstruction is used to signal that command buffer construction should stop
 const StopCmdBufferConstruction = -1
 
+// GraphicsApp is a utility object which implements many of the core requirements to
+// get to a functioning Vulkan app. It will setup the appropriate devices and do many
+// of the necissary preprations to begin drawing.
+//
+// See https://vulkan-tutorial.com/ for a good walkthrough of what this code does.
 type GraphicsApp struct {
 	Instance *Instance
 	App      *App
@@ -36,42 +43,20 @@ type GraphicsApp struct {
 	GraphicsCommandPool    *CommandPool
 	GraphicsCommandBuffers []*CommandBuffer
 
-	MaxFramesInFlight int
-	CurrentFrame      int
-
 	DefaultNumSwapchainImages int
 
-	presentCompleteSemaphore vk.Semaphore
-	renderCompleteSemaphore  vk.Semaphore
+	presentCompleteSemaphore []vk.Semaphore
+	renderCompleteSemaphore  []vk.Semaphore
 	waitFences               []vk.Fence
 
+	frameIndex int
+
 	screenExtent vk.Extent2D
-
-	InFlightFences []vk.Fence
-	ImagesInFlight []vk.Fence
-
-	//Semaphore per frame
-	ImageAvailableSemaphore []vk.Semaphore
-	RenderFinishedSemaphore []vk.Semaphore
-
-	//This channel is used to signal that we want to
-	// start command buffer construction for the specified
-	// frame
-	makeCmdBuffer chan int
-
-	// This channel is used to signal that the last
-	// frame we wanted a command buffer generated
-	// for is ready
-	cmdBufferReady chan bool
-
-	// Mutex used to indicate that
-	// concurrent command generation is in progress
-	cmdGeneration sync.Mutex
 
 	Swapchain           *Swapchain
 	SwapchainImages     []*Image
 	SwapchainImageViews []*ImageView
-	DepthImage          *BoundImage
+	DepthImage          *ImageResource
 	DepthImageView      *ImageView
 	Framebuffers        []vk.Framebuffer
 
@@ -85,7 +70,8 @@ type GraphicsApp struct {
 	MakeCommandBuffer   func(command *CommandBuffer, frame int)
 }
 
-func NewApp(name string, version Version) (*GraphicsApp, error) {
+// NewGraphicsApp creates a new graphics app with the given name and version
+func NewGraphicsApp(name string, version Version) (*GraphicsApp, error) {
 	app := &App{Name: name, Version: version}
 	p := &GraphicsApp{
 		App: app,
@@ -93,6 +79,7 @@ func NewApp(name string, version Version) (*GraphicsApp, error) {
 	return p, nil
 }
 
+// PhysicalDevices returns a list of physical devices
 func (p *GraphicsApp) PhysicalDevices() ([]*PhysicalDevice, error) {
 	if p.Instance == nil {
 		return nil, fmt.Errorf("platform hasn't been initialized yet")
@@ -100,6 +87,7 @@ func (p *GraphicsApp) PhysicalDevices() ([]*PhysicalDevice, error) {
 	return p.Instance.PhysicalDevices()
 }
 
+// EnableLayer enables a specific layer of the code
 func (p *GraphicsApp) EnableLayer(layer string) bool {
 	supportedLayers, err := p.SupportedLayers()
 	if err != nil {
@@ -116,10 +104,12 @@ func (p *GraphicsApp) EnableLayer(layer string) bool {
 	return false
 }
 
+// CreateGraphicsPipelineConfig creates a graphic pipeline configuration for customization
 func (p *GraphicsApp) CreateGraphicsPipelineConfig() *GraphicsPipelineConfig {
 	return p.Device.CreateGraphicsPipelineConfig()
 }
 
+// AddGraphicsPipelineConfig adds this graphic pipeline config back into the app
 func (p *GraphicsApp) AddGraphicsPipelineConfig(name string, config IGraphicsPipelineConfig) {
 	if p.GraphicsPipelineConfigs == nil {
 		p.GraphicsPipelineConfigs = make(map[string]IGraphicsPipelineConfig)
@@ -127,6 +117,7 @@ func (p *GraphicsApp) AddGraphicsPipelineConfig(name string, config IGraphicsPip
 	p.GraphicsPipelineConfigs[name] = config
 }
 
+// EnableExtension enables a specific extension
 func (p *GraphicsApp) EnableExtension(extension string) bool {
 	supportedExtensions, err := p.SupportedExtensions()
 	if err != nil {
@@ -143,33 +134,31 @@ func (p *GraphicsApp) EnableExtension(extension string) bool {
 	return false
 }
 
+// SupportedExtensions returns alist of supported extensions
 func (p *GraphicsApp) SupportedExtensions() ([]string, error) {
 	return SupportedExtensions()
 }
 
+// SupportedLayers returns a list of supported layers
 func (p *GraphicsApp) SupportedLayers() ([]string, error) {
 	return SupportedLayers()
 }
 
+// EnableDebugging enables a list of commonly used debugging layers
 func (p *GraphicsApp) EnableDebugging() bool {
 	if p.Instance != nil {
-		log.Printf("debugging must be enabled prior to initialization")
 		return false
 	}
-
-	return p.EnableLayer("VK_LAYER_LUNARG_parameter_validation") &&
-		p.EnableLayer("VK_LAYER_LUNARG_core_validation") &&
-		p.EnableLayer("VK_LAYER_GOOGLE_threading") &&
-		p.EnableLayer("VK_LAYER_LUNARG_standard_validation") &&
-		p.EnableExtension("VK_EXT_debug_utils") &&
-		p.EnableExtension("VK_EXT_debug_report")
-
+	p.App.EnableDebugging()
+	return true
 }
 
+// NumFramebuffers returns the number of framebuffers that have been created
 func (p *GraphicsApp) NumFramebuffers() int {
 	return p.DefaultNumSwapchainImages
 }
 
+// Init initializes the graphics app
 func (p *GraphicsApp) Init() error {
 	var initSwapchain bool
 
@@ -258,30 +247,11 @@ func (p *GraphicsApp) Init() error {
 
 	p.ResourceManager = p.Device.CreateResourceManager()
 
-	p.makeCmdBuffer = make(chan int)
-	p.cmdBufferReady = make(chan bool)
-
-	go func() {
-		for {
-			nextImage := <-p.makeCmdBuffer
-
-			if nextImage == StopCmdBufferConstruction {
-				return
-			}
-
-			p.cmdGeneration.Lock()
-			log.Printf("generating buffer for %d", nextImage)
-			p.MakeCommandBuffer(p.GraphicsCommandBuffers[nextImage], nextImage)
-			log.Printf("done generating buffer")
-			p.cmdGeneration.Unlock()
-			p.cmdBufferReady <- true
-		}
-	}()
-
 	return nil
 
 }
 
+// SetWindow sets the GLFW window for the graphics app
 func (p *GraphicsApp) SetWindow(window *glfw.Window) error {
 
 	if p.Instance != nil {
@@ -304,11 +274,10 @@ func (p *GraphicsApp) SetWindow(window *glfw.Window) error {
 
 }
 
+// PrepareToDraw creates the nescissary objects required to start drawing, it must be called after Init is called and after MakeCommandBuffers is set
 func (p *GraphicsApp) PrepareToDraw() error {
 	var err error
-	p.cmdGeneration.Lock()
 	err = p.prepareToDraw()
-	p.cmdGeneration.Unlock()
 	if err != nil {
 		return err
 	}
@@ -318,11 +287,6 @@ func (p *GraphicsApp) PrepareToDraw() error {
 
 func (p *GraphicsApp) prepareToDraw() error {
 	var err error
-
-	//FIXME allow the user to choose, but also choose an appropriate number
-	if p.MaxFramesInFlight == 0 {
-		p.MaxFramesInFlight = 2
-	}
 
 	if p.MakeCommandBuffer == nil {
 		return fmt.Errorf("no function to make command buffers has been configured")
@@ -336,6 +300,10 @@ func (p *GraphicsApp) prepareToDraw() error {
 	err = p.createRenderer()
 	if err != nil {
 		return err
+	}
+
+	if p.PipelineCache != nil {
+		p.PipelineCache.Destroy()
 	}
 
 	p.PipelineCache, err = p.Device.CreatePipelineCache()
@@ -368,54 +336,83 @@ func (p *GraphicsApp) prepareToDraw() error {
 		return err
 	}
 
+	p.frameIndex = 0
+
 	return nil
 
 }
 
-func (p *GraphicsApp) fillCmdBuffers() {
+func (p *GraphicsApp) resize(i int) {
+	//FIXME minimization
 
-	// Consume any existing ready indicators
-	select {
-	case <-p.cmdBufferReady:
-	default:
+	p.PresentQueue.WaitIdle()
+	p.GraphicsQueue.WaitIdle()
+	p.Device.WaitIdle()
+
+	p.destroyFramebuffers()
+	p.destroyDepthImage()
+
+	for _, c := range p.GraphicsCommandBuffers {
+		p.GraphicsCommandPool.FreeBuffer(c)
+	}
+	p.destroyGraphicsPipelines()
+	p.destroyRenderer()
+
+	for _, views := range p.SwapchainImageViews {
+		views.Destroy()
 	}
 
-	for i := 0; i < p.NumFramebuffers(); i++ {
-		p.makeCmdBuffer <- i
-		<-p.cmdBufferReady
-	}
+	p.Swapchain.Destroy()
+
+	p.refreshScreenExtent()
+
+	p.createSwapchainAndImages()
+	p.createRenderer()
+	p.createGraphicsPipelines()
+	p.createDepthImage()
+	p.createFramebuffers()
+	p.createCommandBuffers()
+	p.fillCmdBuffers()
+
+	p.resized = false
+
+	p.frameIndex = 0
+}
+
+func (p *GraphicsApp) unprepareToDraw() {
+
+	vk.WaitForFences(p.Device.VKDevice, uint32(len(p.waitFences)), p.waitFences, vk.True, vk.MaxUint64)
+
+	p.destroyCommandBuffers()
+
+	p.destroySyncObjects()
+
+	p.destroyFramebuffers()
+
+	p.destroyDepthImage()
+
+	p.destroyGraphicsPipelines()
+
+	p.PipelineCache.Destroy()
+	p.PipelineCache = nil
+
+	p.destroyRenderer()
+	p.destroySwapchainAndImages()
 
 }
 
+func (p *GraphicsApp) fillCmdBuffers() {
+	for i := range p.GraphicsCommandBuffers {
+		p.MakeCommandBuffer(p.GraphicsCommandBuffers[i], i)
+	}
+}
+
 func (p *GraphicsApp) recreateSwapchain() error {
-	log.Printf("reseting swap chain")
-	// First go ahead and consume any
-	// ready indicators
-	select {
-	case <-p.cmdBufferReady:
-	default:
-		log.Printf("consumed ready bit")
-	}
 
-	for i, _ := range p.GraphicsCommandBuffers {
-		log.Printf("command buffer fence %d status %v", i, vk.GetFenceStatus(p.Device.VKDevice, p.waitFences[i]))
-	}
+	p.unprepareToDraw()
 
-	p.cmdGeneration.Lock()
-
-	log.Printf("waiting for idle queue and device")
-	vk.DeviceWaitIdle(p.Device.VKDevice)
-
-	//p.OldSwapchain = p.Swapchain
-	log.Printf("destroying swap chain and images")
-	p.destroySwapchainAndImages()
-
-	log.Printf("preparing to draw")
 	p.prepareToDraw()
 
-	p.cmdGeneration.Unlock()
-
-	log.Printf("filling command buffers")
 	p.fillCmdBuffers()
 
 	return nil
@@ -427,42 +424,31 @@ func (p *GraphicsApp) getNextFrameToMakeCmdBufferFor(currentFrame int) int {
 	return c
 }
 
-func (p *GraphicsApp) destroySwapchainAndImages() {
-	log.Println("Destroying framebuffers")
-	for _, c := range p.GraphicsCommandBuffers {
-		c.ResetAndRelease()
-	}
-
-	for i, _ := range p.Framebuffers {
-		vk.DestroyFramebuffer(p.Device.VKDevice, p.Framebuffers[i], nil)
-	}
-	p.Framebuffers = nil
-
-	log.Println("Destroying command buffers")
-	for _, b := range p.GraphicsCommandBuffers {
-		p.GraphicsCommandPool.FreeBuffer(b)
-	}
-	p.GraphicsCommandBuffers = nil
-
-	log.Println("Destroying graphics piplines")
-	p.destroyGraphicsPipelines()
-
-	log.Println("Destroying render pass")
-	vk.DestroyRenderPass(p.Device.VKDevice, p.VKRenderPass, nil)
-
-	log.Println("Destroying swap chain images")
-	for _, views := range p.SwapchainImageViews {
-		views.Destroy()
-	}
-	p.SwapchainImageViews = nil
-
-	p.Swapchain.Destroy()
-
-}
-
+// Resize is used to signal that we need to resize
 func (p *GraphicsApp) Resize() {
 	p.refreshScreenExtent()
 	p.resized = true
+}
+
+func (p *GraphicsApp) printFenceStatus() int {
+	signaled := 0
+	for i := 0; i < FrameLag; i++ {
+		s := p.Device.VKGetFenceStatus(p.waitFences[i]) == vk.Success
+		if s {
+			signaled += 1
+		}
+		log.Printf("%d FenceStatus %v", i, s)
+
+	}
+	log.Printf("\n")
+	return signaled
+}
+
+func (p *GraphicsApp) clearFenceStatus() {
+	for i := 0; i < FrameLag; i++ {
+		vk.ResetFences(p.Device.VKDevice, 1, []vk.Fence{p.waitFences[i]})
+	}
+
 }
 
 // DrawFrameSync draws one frame at a time to the GPU it does not utilize the GPU
@@ -481,31 +467,26 @@ func (p *GraphicsApp) DrawFrameSync() error {
 	var imageIndex uint32
 	var err error
 
-	res := vk.AcquireNextImage(p.Device.VKDevice, p.Swapchain.VKSwapchain, vk.MaxUint64, p.presentCompleteSemaphore, vk.NullFence, &imageIndex)
+	res := vk.AcquireNextImage(p.Device.VKDevice, p.Swapchain.VKSwapchain, vk.MaxUint64, p.presentCompleteSemaphore[p.frameIndex], vk.NullFence, &imageIndex)
 
-	if res == vk.ErrorOutOfDate || p.resized {
-		p.resized = false
-		p.refreshScreenExtent()
-		p.recreateSwapchain()
+	if res == vk.ErrorOutOfDate {
+		p.resize(1)
 		return nil
-	} else {
-		err = vk.Error(res)
+	}
+	err = vk.Error(res)
 
-		if err != nil {
-			return err
-		}
+	if err != nil {
+		return err
 	}
 
-	// Wait for the command buffer associated with the image to be ready
-	vk.WaitForFences(p.Device.VKDevice, 1, []vk.Fence{p.waitFences[imageIndex]}, vk.True, vk.MaxUint64)
-	vk.ResetFences(p.Device.VKDevice, 1, []vk.Fence{p.waitFences[imageIndex]})
+	vk.WaitForFences(p.Device.VKDevice, 1, []vk.Fence{p.waitFences[p.frameIndex]}, vk.True, vk.MaxUint64)
+	vk.ResetFences(p.Device.VKDevice, 1, []vk.Fence{p.waitFences[p.frameIndex]})
 
 	p.GraphicsCommandBuffers[int(imageIndex)].Reset()
-
 	p.MakeCommandBuffer(p.GraphicsCommandBuffers[int(imageIndex)], int(imageIndex))
 
-	waitSemaphores := []vk.Semaphore{p.presentCompleteSemaphore}
-	signalSemaphores := []vk.Semaphore{p.renderCompleteSemaphore}
+	waitSemaphores := []vk.Semaphore{p.presentCompleteSemaphore[p.frameIndex]}
+	signalSemaphores := []vk.Semaphore{p.renderCompleteSemaphore[p.frameIndex]}
 	waitStages := []vk.PipelineStageFlags{vk.PipelineStageFlags(vk.PipelineStageColorAttachmentOutputBit)}
 
 	submitInfo := []vk.SubmitInfo{{
@@ -519,7 +500,10 @@ func (p *GraphicsApp) DrawFrameSync() error {
 		PCommandBuffers:      []vk.CommandBuffer{p.GraphicsCommandBuffers[imageIndex].VKCommandBuffer},
 	}}
 
-	err = vk.Error(vk.QueueSubmit(p.GraphicsQueue.VKQueue, 1, submitInfo, p.waitFences[imageIndex]))
+	err = vk.Error(vk.QueueSubmit(p.GraphicsQueue.VKQueue, 1, submitInfo, p.waitFences[p.frameIndex]))
+	if err != nil {
+		return err
+	}
 
 	imageIndices := []uint32{imageIndex}
 	presentInfo := vk.PresentInfo{
@@ -534,9 +518,8 @@ func (p *GraphicsApp) DrawFrameSync() error {
 
 	res = vk.QueuePresent(p.GraphicsQueue.VKQueue, &presentInfo)
 	if res == vk.ErrorOutOfDate || res == vk.Suboptimal || p.resized {
-		p.resized = false
-		p.refreshScreenExtent()
-		p.recreateSwapchain()
+		p.resize(2)
+		return nil
 	} else {
 		err = vk.Error(res)
 
@@ -545,20 +528,20 @@ func (p *GraphicsApp) DrawFrameSync() error {
 		}
 	}
 
-	return nil
-}
+	p.frameIndex = int(imageIndex + 1)
+	p.frameIndex %= FrameLag
 
-func (p *GraphicsApp) destroyGraphicsPipelines() {
-	for _, g := range p.GraphicsPipelines {
-		vk.DestroyPipeline(p.Device.VKDevice, g, nil)
-	}
-	p.GraphicsPipelines = nil
+	p.PresentQueue.WaitIdle()
+	p.GraphicsQueue.WaitIdle()
+	p.Device.WaitIdle()
+
+	return nil
 }
 
 func (p *GraphicsApp) createGraphicsPipelines() error {
 
 	configs := make([]vk.GraphicsPipelineCreateInfo, len(p.GraphicsPipelineConfigs))
-	nameToId := make(map[string]int)
+	nameToID := make(map[string]int)
 	i := 0
 
 	if len(p.GraphicsPipelineConfigs) == 0 {
@@ -572,7 +555,7 @@ func (p *GraphicsApp) createGraphicsPipelines() error {
 		}
 		config.RenderPass = p.VKRenderPass
 		configs[i] = config
-		nameToId[name] = i
+		nameToID[name] = i
 		i++
 	}
 
@@ -588,11 +571,18 @@ func (p *GraphicsApp) createGraphicsPipelines() error {
 	}
 
 	p.GraphicsPipelines = make(map[string]vk.Pipeline)
-	for name, _ := range p.GraphicsPipelineConfigs {
-		p.GraphicsPipelines[name] = graphicsPipelines[nameToId[name]]
+	for name := range p.GraphicsPipelineConfigs {
+		p.GraphicsPipelines[name] = graphicsPipelines[nameToID[name]]
 	}
 
 	return nil
+}
+
+func (p *GraphicsApp) destroyGraphicsPipelines() {
+	for _, g := range p.GraphicsPipelines {
+		vk.DestroyPipeline(p.Device.VKDevice, g, nil)
+	}
+	p.GraphicsPipelines = nil
 }
 
 func (p *GraphicsApp) refreshScreenExtent() {
@@ -606,30 +596,46 @@ func (p *GraphicsApp) refreshScreenExtent() {
 
 }
 
+// GetScreenExtent gets the current screen extents
 func (p *GraphicsApp) GetScreenExtent() vk.Extent2D {
 	return p.screenExtent
 }
 
+// Destroy tears down the graphics application
 func (p *GraphicsApp) Destroy() {
-
-	p.makeCmdBuffer <- StopCmdBufferConstruction
 
 	vk.DeviceWaitIdle(p.Device.VKDevice)
 
+	p.destroyGraphicsPipelines()
+
+	for _, g := range p.GraphicsPipelineConfigs {
+		g.Destroy()
+	}
+
+	if p.PipelineCache != nil {
+		p.PipelineCache.Destroy()
+	}
+
+	p.ResourceManager.Destroy()
+
+	p.destroyDepthImage()
+
 	p.destroySwapchainAndImages()
 
-	for i := 0; i < p.MaxFramesInFlight; i++ {
-		vk.DestroySemaphore(p.Device.VKDevice, p.RenderFinishedSemaphore[i], nil)
-		vk.DestroySemaphore(p.Device.VKDevice, p.ImageAvailableSemaphore[i], nil)
-		vk.DestroyFence(p.Device.VKDevice, p.InFlightFences[i], nil)
-	}
+	p.destroySyncObjects()
 
 	p.GraphicsCommandPool.Destroy()
 
+	vk.DestroySurface(p.Instance.VKInstance, p.VKSurface, nil)
+
 	p.Device.Destroy()
+
+	p.Instance.Destroy()
 
 }
 
+// VKRenderPassCreateInfo is a utility function which creates the render pass info, the implementing application
+// can implement the ConfigureRenderPass function to customize the render pass
 func (p *GraphicsApp) VKRenderPassCreateInfo() vk.RenderPassCreateInfo {
 	attachmentDescriptions := []vk.AttachmentDescription{{
 		Format:         p.Swapchain.Format,
@@ -713,6 +719,12 @@ func (p *GraphicsApp) createRenderer() error {
 
 }
 
+func (p *GraphicsApp) destroyRenderer() {
+	vk.DestroyRenderPass(p.Device.VKDevice, p.VKRenderPass, nil)
+	p.VKRenderPass = vk.NullRenderPass
+	return
+}
+
 func (p *GraphicsApp) createSwapchainAndImages() error {
 
 	extent := p.GetScreenExtent()
@@ -757,14 +769,27 @@ func (p *GraphicsApp) createSwapchainAndImages() error {
 	return nil
 }
 
+func (p *GraphicsApp) destroySwapchainAndImages() {
+
+	for _, views := range p.SwapchainImageViews {
+		views.Destroy()
+	}
+	p.SwapchainImageViews = nil
+
+	/*
+		for _, image := range p.SwapchainImages {
+			image.Destroy()
+		}
+		p.SwapchainImages = nil*/
+
+	p.Swapchain.Destroy()
+
+}
+
 func (p *GraphicsApp) createDepthImage() error {
 	var err error
 
-	//FIXME find correct format
-	p.DepthImage, err = p.Device.CreateBoundImage(p.Swapchain.Extent, vk.FormatD32Sfloat, vk.ImageTilingOptimal, vk.ImageUsageFlags(vk.ImageUsageDepthStencilAttachmentBit), vk.MemoryPropertyFlags(vk.MemoryPropertyDeviceLocalBit))
-	if err != nil {
-		return err
-	}
+	p.DepthImage, err = p.ResourceManager.NewImageResourceWithOptions(p.Swapchain.Extent, vk.FormatD32Sfloat, vk.ImageTilingOptimal, vk.ImageUsageDepthStencilAttachmentBit, vk.SharingModeExclusive, vk.MemoryPropertyDeviceLocalBit)
 
 	p.DepthImageView, err = p.DepthImage.CreateImageViewWithAspectMask(vk.ImageAspectFlags(vk.ImageAspectDepthBit))
 	if err != nil {
@@ -772,6 +797,12 @@ func (p *GraphicsApp) createDepthImage() error {
 	}
 
 	return err
+}
+
+func (p *GraphicsApp) destroyDepthImage() error {
+	p.DepthImage.Destroy()
+	p.DepthImageView.Destroy()
+	return nil
 }
 
 func (p *GraphicsApp) createFramebuffers() error {
@@ -798,11 +829,18 @@ func (p *GraphicsApp) createFramebuffers() error {
 	return nil
 }
 
+func (p *GraphicsApp) destroyFramebuffers() {
+	for i := range p.Framebuffers {
+		vk.DestroyFramebuffer(p.Device.VKDevice, p.Framebuffers[i], nil)
+	}
+	p.Framebuffers = nil
+}
+
 func (p *GraphicsApp) createCommandBuffers() error {
 	var err error
 	p.GraphicsCommandBuffers = make([]*CommandBuffer, len(p.SwapchainImageViews))
-	for i, _ := range p.SwapchainImageViews {
-		p.GraphicsCommandBuffers[i], err = p.GraphicsCommandPool.AllocateBuffer()
+	for i := range p.SwapchainImageViews {
+		p.GraphicsCommandBuffers[i], err = p.GraphicsCommandPool.AllocateBuffer(vk.CommandBufferLevelPrimary)
 		if err != nil {
 			return err
 		}
@@ -811,40 +849,42 @@ func (p *GraphicsApp) createCommandBuffers() error {
 
 }
 
+func (p *GraphicsApp) destroyCommandBuffers() {
+	for _, c := range p.GraphicsCommandBuffers {
+		p.GraphicsCommandPool.FreeBuffer(c)
+	}
+}
+
+func (p *GraphicsApp) destroySyncObjects() error {
+
+	for i := 0; i < FrameLag; i++ {
+		p.Device.VKDestroySemaphore(p.presentCompleteSemaphore[i])
+		p.Device.VKDestroySemaphore(p.renderCompleteSemaphore[i])
+	}
+
+	for _, fence := range p.waitFences {
+		p.Device.VKDestroyFence(fence)
+	}
+
+	return nil
+
+}
+
 func (p *GraphicsApp) createSyncObjects() error {
-	var err error
 
-	p.presentCompleteSemaphore, _ = p.Device.VKCreateSemaphore()
-	p.renderCompleteSemaphore, _ = p.Device.VKCreateSemaphore()
+	p.presentCompleteSemaphore = make([]vk.Semaphore, FrameLag)
+	p.renderCompleteSemaphore = make([]vk.Semaphore, FrameLag)
 
-	p.waitFences = make([]vk.Fence, p.NumFramebuffers())
-	for i := 0; i < p.NumFramebuffers(); i++ {
+	for i := 0; i < FrameLag; i++ {
+		p.presentCompleteSemaphore[i], _ = p.Device.VKCreateSemaphore()
+		p.renderCompleteSemaphore[i], _ = p.Device.VKCreateSemaphore()
+	}
+
+	p.waitFences = make([]vk.Fence, FrameLag)
+	for i := 0; i < FrameLag; i++ {
 		p.waitFences[i], _ = p.Device.VKCreateFence(true)
 	}
 
-	p.ImagesInFlight = make([]vk.Fence, len(p.SwapchainImages))
-	p.InFlightFences = make([]vk.Fence, p.MaxFramesInFlight)
-
-	p.ImageAvailableSemaphore = make([]vk.Semaphore, p.MaxFramesInFlight)
-	p.RenderFinishedSemaphore = make([]vk.Semaphore, p.MaxFramesInFlight)
-
-	for i := 0; i < p.MaxFramesInFlight; i++ {
-		p.InFlightFences[i], err = p.Device.VKCreateFence(true)
-		if err != nil {
-			return err
-		}
-
-		p.ImageAvailableSemaphore[i], err = p.Device.VKCreateSemaphore()
-		if err != nil {
-			return err
-		}
-
-		p.RenderFinishedSemaphore[i], err = p.Device.VKCreateSemaphore()
-		if err != nil {
-			return err
-		}
-
-	}
 	return nil
 
 }

@@ -12,8 +12,8 @@ type Queue struct {
 	VKQueue     vk.Queue
 }
 
-func (q *Queue) WaitIdle() {
-	vk.QueueWaitIdle(q.VKQueue)
+func (q *Queue) WaitIdle() error {
+	return vk.Error(vk.QueueWaitIdle(q.VKQueue))
 }
 
 func (q *Queue) SubmitWaitIdle(buffers ...*CommandBuffer) error {

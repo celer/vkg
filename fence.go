@@ -10,6 +10,14 @@ type Fence struct {
 	VKFence vk.Fence
 }
 
+func (d *Device) VKGetFenceStatus(f vk.Fence) vk.Result {
+	return vk.GetFenceStatus(d.VKDevice, f)
+}
+
+func (d *Device) VKDestroyFence(f vk.Fence) {
+	vk.DestroyFence(d.VKDevice, f, nil)
+}
+
 func (d *Device) VKCreateFence(signaled bool) (vk.Fence, error) {
 	var fence vk.Fence
 	var fenceCreateInfo = vk.FenceCreateInfo{}

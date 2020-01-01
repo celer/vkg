@@ -5,13 +5,19 @@ import (
 )
 
 type ComputePipeline struct {
+	Device                          *Device
 	VKPipeline                      vk.Pipeline
 	VKPipelineShaderStageCreateInfo vk.PipelineShaderStageCreateInfo
 	VKPipelineLayout                vk.PipelineLayout
 }
 
 type PipelineCache struct {
+	Device          *Device
 	VKPipelineCache vk.PipelineCache
+}
+
+func (c *PipelineCache) Destroy() {
+	vk.DestroyPipelineCache(c.Device.VKDevice, c.VKPipelineCache, nil)
 }
 
 func (d *Device) CreatePipelineCache() (*PipelineCache, error) {
@@ -26,6 +32,7 @@ func (d *Device) CreatePipelineCache() (*PipelineCache, error) {
 	}
 
 	var ret PipelineCache
+	ret.Device = d
 	ret.VKPipelineCache = pipelineCache
 	return &ret, nil
 }
@@ -63,8 +70,13 @@ func (d *Device) CreateComputePipelines(pc *PipelineCache, cp ...*ComputePipelin
 
 	for i, _ := range pipelines {
 		cp[i].VKPipeline = pipelines[i]
+		cp[i].Device = d
 	}
 
 	return nil
 
+}
+
+func (c *ComputePipeline) Destroy() {
+	vk.DestroyPipeline(c.Device.VKDevice, c.VKPipeline, nil)
 }
