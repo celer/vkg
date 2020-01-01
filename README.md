@@ -17,7 +17,10 @@ Here is where I expect to go;
   * More examples
   * Unit tests
 
-I hope to polish this repo off quite a bit in the next few weeks. 
+I'm hoping to continue pushing on this repo more in the next few weeks. 
 
+Here is a picture of the examples/imgui program:
+
+![Example program](/assets/imgui.png)
 
 
