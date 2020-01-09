@@ -60,6 +60,8 @@ type GraphicsPipelineConfig struct {
 	VertexInputAttributeDescriptions []vk.VertexInputAttributeDescription
 
 	toDestroy []IDestructable
+
+	Viewport *vk.Viewport
 }
 
 // CreateGraphicsPipelineConfig creates a new config object
@@ -180,12 +182,16 @@ func (g *GraphicsPipelineConfig) VKGraphicsPipelineCreateInfo(extent vk.Extent2D
 	inputAssemblyState.PrimitiveRestartEnable = g.PrimitiveRestartEnable
 
 	var viewport = vk.Viewport{}
-	viewport.X = 0.0
-	viewport.Y = 0.0
-	viewport.Width = float32(extent.Width)
-	viewport.Height = float32(extent.Height)
-	viewport.MinDepth = 0.0
-	viewport.MaxDepth = 1.0
+	if g.Viewport == nil {
+		viewport.X = 0.0
+		viewport.Y = 0.0
+		viewport.Width = float32(extent.Width)
+		viewport.Height = float32(extent.Height)
+		viewport.MinDepth = 0.0
+		viewport.MaxDepth = 1.0
+	} else {
+		viewport = *g.Viewport
+	}
 
 	var scissor = vk.Rect2D{}
 	scissor.Offset = vk.Offset2D{X: 0, Y: 0}
@@ -202,7 +208,7 @@ func (g *GraphicsPipelineConfig) VKGraphicsPipelineCreateInfo(extent vk.Extent2D
 	rasterState.SType = vk.StructureTypePipelineRasterizationStateCreateInfo
 	rasterState.DepthClampEnable = vk.False
 	rasterState.RasterizerDiscardEnable = vk.False
-	rasterState.PolygonMode = vk.PolygonModeFill
+	rasterState.PolygonMode = g.PolygonMode
 	rasterState.LineWidth = g.LineWidth
 	rasterState.CullMode = vk.CullModeFlags(g.CullMode)
 

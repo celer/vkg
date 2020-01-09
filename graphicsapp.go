@@ -469,7 +469,7 @@ func (p *GraphicsApp) DrawFrameSync() error {
 
 	res := vk.AcquireNextImage(p.Device.VKDevice, p.Swapchain.VKSwapchain, vk.MaxUint64, p.presentCompleteSemaphore[p.frameIndex], vk.NullFence, &imageIndex)
 
-	if res == vk.ErrorOutOfDate {
+	if res == vk.ErrorOutOfDate || p.resized {
 		p.resize(1)
 		return nil
 	}
